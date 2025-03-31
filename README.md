@@ -54,5 +54,8 @@ python rl-distance-train/train_image_nav.py
 
 After training, you can evaluate the performance of both policies using the produced tensorboard logs and provided evaluation notebook (refer to `rl-distance-train`).
 
-Compare the results to examine how adding RGB information impacts navigation performance relative to a depth-only policy.
+In case you are interested in further parameter tuning please refer to following `.yaml` files:
+
+- `path/to/habitat-lab/habitat-baselines/habitat_baselines/config/instance_imagenav/ddppo_instance_imagenav.yaml`
+- `path/to/habitat-lab/habitat/config/benchmark/nav/instance_imagenav/instance_imagenav_hm3d_v2.yaml`
 
