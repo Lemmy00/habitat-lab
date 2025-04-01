@@ -9,13 +9,15 @@ Clone the repository and follow the instructions to install Habitat-Lab dependen
 ```bash
 git clone --branch depth-only-img-nav --single-branch https://github.com/Lemmy00/habitat-lab.git
 cd habitat-lab
-
-# Please then follow the installation steps outlined in HABITAT.md to install the necessary dependencies.
 ```
+
+Please follow the installation steps outlined in `HABITAT.md` to install the necessary dependencies.
+
+> ⚠️ Note: You will need to adjust the path to your Miniconda installation inside the Slurm scripts (`srun_policy_train.sh` and `srun_policy_train_depth_only.sh`). All Slurm scripts must be executed from the **root directory** of the `habitat-lab` repository.
 
 ## Step 2: Download and Prepare the Dataset
 
-From the root of the Habitat-Lab directory, run the following commands to download and prepare the dataset:
+From the root of the Habitat-Lab directory, run the following commands:
 
 ```bash
 mkdir -p data/datasets/pointnav/hm3d/v2
@@ -24,11 +26,6 @@ cd data/datasets/pointnav/hm3d/v2
 wget https://dl.fbaipublicfiles.com/habitat/data/datasets/imagenav/hm3d/v2/instance_imagenav_hm3d_v2.zip
 
 unzip instance_imagenav_hm3d_v2.zip
-```
-
-Once done, return to the root directory of the Habitat-Lab repository:
-
-```bash
 cd ../../../..
 ```
 
@@ -37,25 +34,35 @@ cd ../../../..
 You can now train two types of policies:
 
 ### Depth-only Policy
-To train a policy using only depth information, execute:
 
 ```bash
-python rl-distance-train/train_image_nav.py --depth-only
+python rl-distance-train/train_image_nav.py --depth-only --dist-to-goal
 ```
 
 ### RGB + Depth Policy
-To train a policy using both RGB and depth data, execute:
 
 ```bash
-python rl-distance-train/train_image_nav.py
+python rl-distance-train/train_image_nav.py --dist-to-goal
 ```
 
-## Step 4: Evaluating and Comparing Policies
+> Note: The `--dist-to-goal` flag enables the agent to use the relative distance to the goal as an additional observation.
 
-After training, you can evaluate the performance of both policies using the produced tensorboard logs and provided evaluation notebook (refer to `rl-distance-train`).
+## Step 4: Launching with Slurm
 
-In case you are interested in further parameter tuning please refer to following `.yaml` files:
+To train using Slurm job on Euler, submit the corresponding job scripts from the root of the repo:
 
-- `path/to/habitat-lab/habitat-baselines/habitat_baselines/config/instance_imagenav/ddppo_instance_imagenav.yaml`
-- `path/to/habitat-lab/habitat/config/benchmark/nav/instance_imagenav/instance_imagenav_hm3d_v2.yaml`
+```bash
+sbatch < srun_policy_train.sh
+sbatch < srun_policy_train_depth_only.sh
+```
 
+Make sure to edit the job scripts and replace the Miniconda activation path with your own path.
+
+## Step 5: Evaluating and Comparing Policies
+
+After training, evaluate the performance of both policies using the TensorBoard logs and the provided evaluation notebook (refer to the `rl-distance-train` directory).
+
+For advanced parameter tuning, consult the following YAML config files:
+
+- `habitat-baselines/habitat_baselines/config/instance_imagenav/ddppo_instance_imagenav.yaml`
+- `habitat/config/benchmark/nav/instance_imagenav/instance_imagenav_hm3d_v2.yaml`
