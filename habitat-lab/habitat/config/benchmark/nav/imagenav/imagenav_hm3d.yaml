@@ -1,0 +1,32 @@
+# @package _global_
+
+defaults:
+  - imagenav_base
+  - /habitat/dataset/instance_imagenav: hm3d_v2
+  - _self_
+
+habitat:
+  environment:
+    max_episode_steps: 1000
+  simulator:
+    scene_dataset: "/path/to/hm3d/hm3d_annotated_basis.scene_dataset_config.json"
+    turn_angle: 30
+    forward_step_size: 0.25
+    agents:
+      main_agent:
+        sim_sensors:
+          rgb_sensor:
+            width: 256
+            height: 256
+            hfov: 90
+          depth_sensor:
+            width: 256
+            height: 256
+            hfov: 90
+            min_depth: 0.0
+            max_depth: 100.0
+            normalize_depth: False
+    habitat_sim_v0:
+      allow_sliding: False
+  dataset:
+    scenes_dir: "/path/to/hm3d"

@@ -11,7 +11,7 @@ habitat_baselines:
   verbose: False
   trainer_name: "ppo"
   torch_gpu_id: 0
-  tensorboard_dir: "tb"
+  tensorboard_dir: "tb/point_nav_resnet"
   video_dir: "video_dir"
   # Evaluate on all episodes
   test_episode_count: -1

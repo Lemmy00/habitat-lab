@@ -46,6 +46,8 @@ __all__ = [
     "HumanoidDetectorSensorConfig",
     "ArmDepthBBoxSensorConfig",
     "SpotHeadStereoDepthSensorConfig",
+    "GeometricOverlapSensorConfig",
+    "GeometricOverlapSeedSensorConfig"
     # REARRANGEMENT ACTIONS
     "EmptyActionConfig",
     "ArmActionConfig",
@@ -396,7 +398,20 @@ class PointGoalWithGPSCompassSensorConfig(PointGoalSensorConfig):
     """
 
     type: str = "PointGoalWithGPSCompassSensor"
+    distance_norm: float = 1.0
 
+    # Noise parameters
+    noise_enabled: bool = False
+    noise_sigma: float = 0.10
+    noise_alpha: float = 0.90
+    noise_spike_prob: float = 0.05
+    noise_spike_scale: float = 2.0
+
+    # Confidence parameters
+    return_confidence: bool = False
+    confidence_coef: float = 0.25
+    confidence_sigma: float = 0.15
+    confidence_alpha: float = 0.20
 
 @dataclass
 class HumanoidDetectorSensorConfig(LabSensorConfig):
@@ -497,6 +512,17 @@ class GPSSensorConfig(LabSensorConfig):
     """
     type: str = "GPSSensor"
     dimensionality: int = 2
+
+@dataclass
+class GeometricOverlapSensorConfig(LabSensorConfig):
+    type: str = "GeometricOverlapSensor"
+    hfov: float = 90.0
+    width: int = 256
+    height: int = 256
+
+@dataclass
+class GeometricOverlapSeedSensorConfig(LabSensorConfig):
+    type: str = "GeometricOverlapSeedSensor"
 
 
 @dataclass
@@ -739,7 +765,8 @@ class SuccessMeasurementConfig(MeasurementConfig):
     """
     type: str = "Success"
     success_distance: float = 0.2
-
+    success_ratio: float = 0.0
+    turn_angle_degrees: float = 30.0
 
 @dataclass
 class SPLMeasurementConfig(MeasurementConfig):
@@ -2129,6 +2156,18 @@ cs.store(
 
 
 # Task Sensors
+cs.store(
+    package="habitat.task.lab_sensors.geometric_overlap_sensor",
+    group="habitat/task/lab_sensors",
+    name="geometric_overlap_sensor",
+    node=GeometricOverlapSensorConfig,
+)
+cs.store(
+    package="habitat.task.lab_sensors.geometric_overlap_seed_sensor",
+    group="habitat/task/lab_sensors",
+    name="geometric_overlap_seed_sensor",
+    node=GeometricOverlapSeedSensorConfig,
+)
 cs.store(
     package="habitat.task.lab_sensors.gps_sensor",
     group="habitat/task/lab_sensors",

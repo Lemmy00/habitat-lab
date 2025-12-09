@@ -1,0 +1,90 @@
+# @package _global_
+
+defaults:
+  - /habitat_baselines: habitat_baselines_rl_config_base
+  - /benchmark/nav/imagenav: imagenav_distance
+  - _self_
+
+habitat:
+  task:
+    success_reward: 2.5
+    slack_reward: -1e-3
+
+habitat_baselines:
+  verbose: False
+  trainer_name: "ddppo"
+  torch_gpu_id: 0
+  tensorboard_dir: "tb/image_nav_dist_vis_VIP_overlap_policy"
+  video_dir: "video_dir"
+  test_episode_count: -1
+  eval_ckpt_path_dir: "data/image_nav_dist_vis_VIP_overlap_policy_checkpoints"
+  num_environments: 4
+  checkpoint_folder: "data/image_nav_dist_vis_VIP_overlap_policy_checkpoints"
+  num_updates: -1
+  total_num_steps: 1e9
+  log_interval: 100
+  num_checkpoints: 100
+  # Force PyTorch to be single threaded as
+  # this improves performance considerably
+  force_torch_single_threaded: True
+  eval:
+    split: val
+
+  rl:
+
+    policy:
+      main_agent:
+        name: "TemporalDistanceNavPolicy"
+
+    ppo:
+      # ppo params
+      clip_param: 0.2
+      ppo_epoch: 2
+      num_mini_batch: 2
+      value_loss_coef: 0.5
+      entropy_coef: 0.01
+      lr: 2.5e-5
+      eps: 1e-5
+      max_grad_norm: 0.2
+      num_steps: 64
+      use_gae: True
+      gamma: 0.99
+      tau: 0.95
+      use_linear_clip_decay: False
+      use_linear_lr_decay: False
+      reward_window_size: 50
+
+      use_normalized_advantage: False
+
+      hidden_size: 512
+      random_crop: False
+      rgb_color_jitter: 0.0
+
+      # Use double buffered sampling, typically helps
+      # when environment time is similar or larger than
+      # policy inference time during rollout generation
+      use_double_buffered_sampler: False
+    ddppo:
+      sync_frac: 0.6
+      # The PyTorch distributed backend to use
+      distrib_backend: NCCL
+      # Path to pretrained policy weights (for policy transfer to be used with VLD)
+      pretrained_weights: 'path/to/data/point_nav_overlap_policy_checkpoints/checkpoint_xxx.pth'  # noqa
+      # Initialize with pretrained weights
+      pretrained: False
+      # Whether the visual encoder backbone will be trained.
+      train_encoder: True
+      # visual encoder backbone
+      backbone: efficientnet-b0
+      # Whether to reset the critic linear layer
+      reset_critic: True
+
+      # Model parameters
+      encoder_backbone: dist_decoder_conf_100max
+      encoder_mode: sparse
+      freeze_encoder: True
+      distance_scale: 100
+      use_confidence: False
+      rnn_type: LSTM
+      use_vision: True
+      num_recurrent_layers: 2

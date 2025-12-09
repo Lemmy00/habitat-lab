@@ -10,8 +10,11 @@ from typing import TYPE_CHECKING, Any, List, Optional, Sequence, Tuple, Union
 
 import attr
 import cv2
+import math
 import numpy as np
 import quaternion
+import hashlib
+import copy
 from gym import spaces
 
 from habitat.config import read_write
@@ -36,6 +39,7 @@ from habitat.core.spaces import ActionSpace
 from habitat.core.utils import not_none_validator
 from habitat.sims.habitat_simulator.actions import HabitatSimActions
 from habitat.tasks.utils import cartesian_to_polar
+from habitat_sim.utils.common import quat_to_coeffs, quat_from_angle_axis
 from habitat.utils.geometry_utils import (
     quaternion_from_coeff,
     quaternion_rotate_vector,
@@ -253,13 +257,17 @@ class ImageGoalSensor(Sensor):
         ]
 
     def _get_pointnav_episode_image_goal(self, episode: NavigationEpisode):
+        goal = episode.goals[0]
         goal_position = np.array(episode.goals[0].position, dtype=np.float32)
-        # to be sure that the rotation is the same for the same episode_id
-        # since the task is currently using pointnav Dataset.
-        seed = abs(hash(episode.episode_id)) % (2**32)
-        rng = np.random.RandomState(seed)
-        angle = rng.uniform(0, 2 * np.pi)
-        source_rotation = [0, np.sin(angle / 2), 0, np.cos(angle / 2)]
+        if hasattr(goal, "rotation") and goal.rotation is not None:
+            source_rotation = goal.rotation
+        else:
+            # to be sure that the rotation is the same for the same episode_id
+            # since the task is currently using pointnav Dataset.
+            seed = abs(hash(episode.episode_id)) % (2**32)
+            rng = np.random.RandomState(seed)
+            angle = rng.uniform(0, 2 * np.pi)
+            source_rotation = [0, np.sin(angle / 2), 0, np.cos(angle / 2)]
         goal_observation = self._sim.get_observations_at(
             position=goal_position.tolist(), rotation=source_rotation
         )
@@ -308,8 +316,39 @@ class IntegratedPointGoalGPSAndCompassSensor(PointGoalSensor):
     """
     cls_uuid: str = "pointgoal_with_gps_compass"
 
+    def __init__(
+        self, sim: Simulator, config: "DictConfig", *args: Any, **kwargs: Any
+    ):
+        self._distance_norm = getattr(config, "distance_norm", 1.0)
+        # Per-env noise state (key: episode_id or agent_id)
+        self._noise_state = dict()
+
+        # Noise Hyperparameters
+        self._noise_enabled = getattr(config, "noise_enabled", False)
+        self._sigma = getattr(config, "noise_sigma", 0.10)
+        self._alpha = getattr(config, "noise_alpha", 0.90)
+        self._spike_prob = getattr(config, "noise_spike_prob", 0.05)
+        self._spike_scale = getattr(config, "noise_spike_scale", 2.0)
+
+        # Confidence Hyperparameters
+        self._return_confidence = getattr(config, "return_confidence", False)
+        self._confidence_coef = getattr(config, "confidence_coef", 0.25)
+        self._confidence_sigma = getattr(config, "confidence_sigma", 0.15)
+        self._confidence_alpha = getattr(config, "confidence_alpha", 0.20)
+
+        super().__init__(sim, config, *args, **kwargs)
+
     def _get_uuid(self, *args: Any, **kwargs: Any) -> str:
         return self.cls_uuid
+
+    @staticmethod
+    def _update_noise(prev_noise, sigma, alpha, spike_prob, spike_scale):
+        # Ornstein-Uhlenbeck process (OU noise)
+        eps = np.random.randn() * sigma
+        new_noise = alpha * prev_noise + eps
+        if np.random.rand() < spike_prob:
+            new_noise += np.random.randn() * spike_scale
+        return new_noise
 
     def get_observation(
         self, observations, episode, *args: Any, **kwargs: Any
@@ -319,9 +358,51 @@ class IntegratedPointGoalGPSAndCompassSensor(PointGoalSensor):
         rotation_world_agent = agent_state.rotation
         goal_position = np.array(episode.goals[0].position, dtype=np.float32)
 
-        return self._compute_pointgoal(
+        pointgoal =  self._compute_pointgoal(
             agent_position, rotation_world_agent, goal_position
         )
+        
+        if not self._noise_enabled:
+            pointgoal[0] = pointgoal[0] / self._distance_norm
+            return pointgoal
+
+        if len(self._noise_state) > 100_000:
+            recent_keys = list(self._noise_state.keys())[-10_000:]
+            self._noise_state = {k: v for k, v in self._noise_state.items() if k in recent_keys}
+
+        episode_id = episode.episode_id
+        num_steps = kwargs['task'].measurements.measures["num_steps"].get_metric()
+        if (episode_id not in self._noise_state) or (num_steps == 0):
+            self._noise_state[episode_id] = (0.0, 0.0)
+
+        # get noise state
+        prev_noise, prev_conf_noise = self._noise_state[episode_id]
+        
+        # add noise to the distance
+        d = pointgoal[0]
+        noise = self._update_noise(prev_noise, self._sigma, self._alpha, self._spike_prob, self._spike_scale)
+        if d < 1.01:
+            noise = np.sign(noise) * np.clip(np.abs(noise), a_min=0, a_max=d/4)
+        elif d < 2:
+            noise = np.sign(noise) * np.clip(np.abs(noise), a_min=0, a_max=d/1.1)
+        else:
+            noise = np.clip(noise, a_min=-(d/1.3), a_max=None)
+        noisy_d = max(d + noise, 0.0)
+
+        # get confidence add noise 
+        confidence = np.exp(-self._confidence_coef * np.abs(noise))
+        conf_noise = self._update_noise(prev_conf_noise, self._confidence_sigma, self._confidence_alpha, 0, 0)
+        if d > 2:
+            confidence += conf_noise
+        confidence = float(np.clip(confidence, 0, 1))
+
+        self._noise_state[episode_id] = (noise, conf_noise)
+
+        pointgoal[0] = noisy_d / self._distance_norm
+        if self._return_confidence:
+            pointgoal[1] = confidence
+
+        return pointgoal
 
 
 @registry.register_sensor
@@ -498,6 +579,224 @@ class ProximitySensor(Sensor):
             dtype=np.float32,
         )
 
+@registry.register_sensor(name="GeometricOverlapSensor")
+class GeometricOverlapSensor(Sensor):
+    cls_uuid: str = "geometric_overlap_sensor"
+
+    def __init__(self, sim: Simulator, config, **kwargs: Any):
+        super().__init__(config=config)
+
+        self._sim = sim
+
+        hfov = getattr(config, "hfov", 90.0)
+        W = getattr(config, "width", 256)
+        H = getattr(config, "height", 256)
+        self.K = self.K_from_fov(W, H, hfov)
+
+        self.goal_info_map = {}
+
+    # Defines the name of the sensor in the sensor suite dictionary
+    def _get_uuid(self, *args: Any, **kwargs: Any) -> str:
+        return self.cls_uuid
+
+    # Defines the type of the sensor
+    def _get_sensor_type(self, *args: Any, **kwargs: Any):
+        return SensorTypes.TENSOR
+
+    # Defines the size and range of the observations of the sensor
+    def _get_observation_space(self, *args: Any, **kwargs: Any):
+        return spaces.Box(shape=(13,), low=-np.inf, high=np.inf, dtype=np.float32)
+
+    def get_goal_info(self, observations, episode: NavigationEpisode, *args: Any, **kwargs: Any):
+        """
+        Get the goal information from the episode.
+        """
+        goal = episode.goals[0]
+        if hasattr(goal, "rotation") and goal.rotation is not None:
+            goal_source_rotation = goal.rotation
+        else:
+            seed = abs(hash(episode.episode_id)) % (2**32)
+            rng = np.random.RandomState(seed)
+            angle = rng.uniform(0, 2 * np.pi)
+            goal_source_rotation = [0, np.sin(angle / 2), 0, np.cos(angle / 2)]
+
+        # Set the simulator state to the goal state.
+        original_agent_state = self._sim.get_agent_state()
+        self._sim.set_agent_state(goal.position, goal_source_rotation)
+        goal_obs = self._sim.get_sensor_observations()
+        goal_state = self._sim.get_agent_state()
+
+        # Restore the original agent state.
+        self._sim.set_agent_state(original_agent_state.position, original_agent_state.rotation)
+
+        # Return the goal observations and state
+        return np.squeeze(goal_obs['depth']).astype(np.float32), goal_state.sensor_states['depth']
+
+    # This is called whenever reset is called or an action is taken
+    def get_observation(
+        self, observations, *args: Any, episode: NavigationEpisode, **kwargs: Any
+    ):
+        agent_state = self._sim.get_agent_state()
+        cam_state = agent_state.sensor_states["depth"]
+        world_T_cam_curr = self.se3_world_T_cam_plusZ(
+            cam_state.position, cam_state.rotation
+        )
+        curr_depth = np.squeeze(observations["depth"]).astype(np.float32)
+
+        episode_uniq_id = f"{episode.scene_id} {episode.episode_id}"
+        if episode_uniq_id not in self.goal_info_map:
+            goal_depth, goal_state = self.get_goal_info(observations, episode)
+            self.goal_info_map[episode_uniq_id] = (goal_depth, goal_state)
+
+        if len(self.goal_info_map) > 1000:
+            # Limit the size of the goal info map to avoid memory issues
+            # Pop 700 oldest entries
+            keys = list(self.goal_info_map.keys())
+            for key in keys[:700]:
+                self.goal_info_map.pop(key)
+
+        # Get the goal depth and state from the map
+        goal_depth, goal_state = self.goal_info_map[episode_uniq_id]
+        world_T_cam_goal = self.se3_world_T_cam_plusZ(
+            goal_state.position, goal_state.rotation
+        )
+
+        ratio = self.projection_success_ratio(
+            goal_depth, self.K, world_T_cam_goal,
+            curr_depth, self.K, world_T_cam_curr,
+            depth_thresh=0.2, sample_every=1
+        )
+
+        R_rel, t_rel = self.relative_cam_T(world_T_cam_goal, world_T_cam_curr)
+        t_rel_enc = self.sym_log(t_rel)
+
+        return np.concatenate([[ratio], R_rel.reshape(-1), t_rel_enc], axis=0, dtype=np.float32)
+    
+    @staticmethod
+    def K_from_fov(width: int, height: int, hfov_deg: float) -> np.ndarray:
+        hfov = math.radians(hfov_deg)
+        vfov = 2.0 * math.atan(math.tan(hfov/2.0) * (height/width))
+        fx = 0.5 * width  / math.tan(hfov/2.0)
+        fy = 0.5 * height / math.tan(vfov/2.0)
+        cx = (width  - 1) * 0.5
+        cy = (height - 1) * 0.5
+        return np.array([[fx, 0,  cx],
+                        [0,  fy, cy],
+                        [0,   0,  1]], dtype=np.float32)
+    
+    @staticmethod
+    def se3_world_T_cam_plusZ(position, rotation_quat) -> np.ndarray:
+        """Return 4x4 world_T_cam where the *camera* frame is +Z forward (OpenCV).
+        Habitat's native camera is -Z forward; we fix that with a constant flip."""
+        R_wc_hab = quaternion.as_rotation_matrix(rotation_quat)  # world <- cam(Habitat basis)
+        F = np.diag([1, 1, -1])                                  # cam(+Z) -> cam(Habitat)
+        # world <- cam(+Z)
+        R_wc = R_wc_hab @ F
+        T = np.eye(4, dtype=np.float32)
+        T[:3,:3] = R_wc
+        T[:3, 3] = np.asarray(position, dtype=np.float32)
+        return T
+    
+    @staticmethod
+    def relative_cam_T(goal_world_T_cam: np.ndarray, curr_world_T_cam: np.ndarray):
+        curr_cam_T_world = np.linalg.inv(curr_world_T_cam)
+        curr_cam_T_goal_cam = curr_cam_T_world @ goal_world_T_cam
+        R_rel = curr_cam_T_goal_cam[:3,:3]        # (3,3)
+        t_rel = curr_cam_T_goal_cam[:3, 3]        # (3,)
+        return R_rel, t_rel
+    
+    @staticmethod
+    def sym_log(x: np.ndarray, alpha: float = 1.0) -> np.ndarray:
+        return np.sign(x) * np.log1p(alpha * np.abs(x))
+    
+    @staticmethod
+    def projection_success_ratio(
+        depth_goal: np.ndarray, K_goal: np.ndarray, world_T_cam_goal: np.ndarray,
+        depth_curr: np.ndarray, K_curr: np.ndarray, world_T_cam_curr: np.ndarray,
+        depth_thresh: float = 0.10, sample_every: int = 1
+    ) -> float:
+        """All inputs assume +Z-forward camera frames and metric depths in meters."""
+        Hg, Wg = depth_goal.shape
+        # Habitat uses 0 for invalid; set to -1 for our logic
+        dg = depth_goal.copy()
+        dg[dg <= 0] = -1.0
+
+        valid = dg > 0
+        if sample_every > 1:
+            # downsample to speed up if you want
+            mask = np.zeros_like(valid)
+            mask[::sample_every, ::sample_every] = True
+            valid = valid & mask
+
+        total = int(valid.sum())
+        if total == 0:
+            return 0.0
+
+        vg, ug = np.where(valid)               # (N,)
+        zg = dg[vg, ug]                        # (N,)
+
+        pix = np.stack([ug, vg, np.ones_like(ug)], 0)   # (3,N)
+        Kg_inv = np.linalg.inv(K_goal)
+        pts_cam_goal = Kg_inv @ pix * zg                 # (3,N)
+        pts_h_goal = np.vstack([pts_cam_goal, np.ones((1, pts_cam_goal.shape[1]))])
+
+        # goal-cam -> world -> current-cam
+        curr_cam_T_goal_cam = np.linalg.inv(world_T_cam_curr) @ world_T_cam_goal
+        pts_h_curr = curr_cam_T_goal_cam @ pts_h_goal
+        pts_curr = pts_h_curr[:3, :]                       # (3,N)
+
+        Z = pts_curr[2, :]
+        in_front = Z > 0                                   # +Z forward
+
+        # project to current image
+        pix_curr_h = K_curr @ pts_curr
+        u = pix_curr_h[0, :] / (pix_curr_h[2, :] + 1e-8)
+        v = pix_curr_h[1, :] / (pix_curr_h[2, :] + 1e-8)
+        ui = np.round(u).astype(np.int32)
+        vi = np.round(v).astype(np.int32)
+
+        Hc, Wc = depth_curr.shape
+        in_bounds = (ui >= 0) & (ui < Wc) & (vi >= 0) & (vi < Hc)
+        ok = in_front & in_bounds
+        if not np.any(ok):
+            return 0.0
+
+        Z_curr_img = depth_curr[vi[ok], ui[ok]]
+        valid_curr = Z_curr_img > 0
+        dep_ok = np.abs(Z[ok] - Z_curr_img) < depth_thresh
+        success = valid_curr & dep_ok
+        return float(success.sum()) / float(total)
+
+@registry.register_sensor(name="GeometricOverlapSeedSensor")
+class GeometricOverlapSeedSensor(Sensor):
+    cls_uuid: str = "geometric_overlap_seed_sensor"
+
+    def __init__(self, sim: Simulator, config, **kwargs):
+        super().__init__(config=config)
+        self._sim = sim
+
+    def _get_uuid(self, *args, **kwargs):
+        return self.cls_uuid
+
+    def _get_sensor_type(self, *args, **kwargs):
+        return SensorTypes.TENSOR
+
+    def _get_observation_space(self, *args, **kwargs):
+        return spaces.Box(shape=(1,), low=-np.inf, high=np.inf, dtype=np.int32)
+
+    def get_observation(self, observations, *args, episode: NavigationEpisode, **kwargs):
+        cam_state = self._sim.get_agent_state().sensor_states["depth"]
+        seed = self.deterministic_seed_from_cam_state(episode.episode_id, cam_state)
+        return np.array([seed], dtype=np.int32)
+
+    @staticmethod
+    def deterministic_seed_from_cam_state(episode_id, cam_state):
+        # Convert episode_id+position+rotation to bytes
+        state_bytes = np.concatenate([[episode_id], np.round(cam_state.position, 2), np.round(quat_to_coeffs(cam_state.rotation), 2)]).tobytes()
+        # Hash to get a consistent integer seed
+        seed_int = int(hashlib.sha256(state_bytes).hexdigest(), 16) % (2**32)
+        return seed_int
+    
 
 @registry.register_measure
 class Success(Measure):
@@ -514,6 +813,18 @@ class Success(Measure):
         self._sim = sim
         self._config = config
         self._success_distance = self._config.success_distance
+        self._success_ratio = getattr(config, "success_ratio", 0.0)
+        self._turn_angle_degrees = getattr(config, "turn_angle_degrees", 30.0)
+        assert self._success_distance >= 0, (
+            "Success distance must be non-negative, "
+            f"got {self._success_distance}"
+        )
+        assert 0 <= self._success_ratio <= 1, (
+            "Success ratio must be in [0, 1], "
+            f"got {self._success_ratio}"
+        )
+
+        self.geometric_overlap_sensor = GeometricOverlapSensor(sim=self._sim, config=self._config)
 
         super().__init__()
 
@@ -527,7 +838,7 @@ class Success(Measure):
         self.update_metric(episode=episode, task=task, *args, **kwargs)  # type: ignore
 
     def update_metric(
-        self, episode, task: EmbodiedTask, *args: Any, **kwargs: Any
+        self, episode: NavigationEpisode, task: EmbodiedTask, *args: Any, **kwargs: Any
     ):
         distance_to_target = task.measurements.measures[
             DistanceToGoal.cls_uuid
@@ -538,9 +849,56 @@ class Success(Measure):
             and task.is_stop_called  # type: ignore
             and distance_to_target < self._success_distance
         ):
-            self._metric = 1.0
+            if self._success_ratio == 0.0:
+                self._metric = 1.0
+            else:
+                self._check_ratio_success(episode)
         else:
             self._metric = 0.0
+
+    def _check_ratio_success(self, episode: NavigationEpisode):
+        agent_state = copy.deepcopy(self._sim.get_agent_state())
+        for angle in range(0, 360, int(self._turn_angle_degrees)):
+            rotated_agent_state = self.rotate_agent_state(
+                agent_state, angle
+            )
+            new_observations = self._sim.get_observations_at(
+                position=rotated_agent_state.position,
+                rotation=rotated_agent_state.rotation,
+            )
+            self._sim.set_agent_state(
+                rotated_agent_state.position, rotated_agent_state.rotation
+            )
+            # Get the geometric overlap ratio for the rotated agent state
+            ratio = self.geometric_overlap_sensor.get_observation(new_observations, episode=episode)[0]
+            if hasattr(ratio, "__len__"):  # means it's array-like
+                ratio = ratio[0]
+            
+            if ratio > self._success_ratio:
+                # If any orientation has a ratio above the threshold, we consider it a success
+                self._metric = 1.0
+                break
+        else:
+            # If no orientation had a sufficient ratio, we consider it a failure
+            self._metric = 0.0
+
+        self._sim.set_agent_state(agent_state.position, agent_state.rotation)
+
+    @staticmethod
+    def rotate_agent_state(agent_state, angle_degrees, axis=np.array([0.0, 1.0, 0.0])):
+        """
+        Rotate the agent's orientation by `angle_rad` around `axis` (world up by default).
+        Returns a shallow copy with updated rotation.
+        """
+        # build an incremental rotation Δq from angle-axis
+        dq = quat_from_angle_axis(np.radians(angle_degrees), axis)  # unit quaternion
+        # compose with current orientation (left-multiply applies Δq in world frame)
+        q_new = dq * agent_state.rotation
+
+        rotated = type(agent_state)()
+        rotated.position = agent_state.position.copy()  # keep position unless you also want to orbit
+        rotated.rotation = q_new
+        return rotated
 
 
 @registry.register_measure
@@ -997,9 +1355,171 @@ class DistanceToGoal(Measure):
             )
             self._metric = distance_to_target
 
+class _ProgressReward(Measure):
+    """Shared machinery for ZER and OVRL rewards (success-aware version)."""
+
+    def __init__(self, sim: Simulator, config: "DictConfig", *args: Any, **kwargs: Any):
+        self._sim = sim
+        self._config = config
+        
+        self.prev_dist: Optional[float] = None
+        
+        # Constant hyper-parameters
+        self.cs = 15.0               # bonus when reaching goal
+        self.ca = 10.0               # extra bonus if within angle threshold
+        self.rg = 1.0               # goal radius
+        self.theta_g = np.deg2rad(25.0)
+        self.gamma = 0.01           # step cost
+
+        super().__init__()
+
+    # ---------------------------------------------------------------------
+    # Mandatory Habitat overrides
+    # ---------------------------------------------------------------------
+
+    def _check_success(self, task: EmbodiedTask, dist: float) -> bool:
+        return bool(task.measurements.measures[Success.cls_uuid].get_metric())
+
+    def _get_dist(self, task: EmbodiedTask) -> float:
+        return task.measurements.measures[DistanceToGoal.cls_uuid].get_metric()
+
+    def reset_metric(self, episode, task, *args: Any, **kwargs: Any):
+        task.measurements.check_measure_dependencies(
+            self.uuid, [DistanceToGoal.cls_uuid, Success.cls_uuid]
+        )
+        self.prev_dist = task.measurements.measures[
+            DistanceToGoal.cls_uuid
+        ].get_metric()
+        self._update(episode, task)
+
+    def update_metric(self, episode, task: EmbodiedTask, *args: Any, **kwargs: Any):
+        if 'observations' in kwargs and 'geometric_overlap_sensor' in kwargs['observations']:
+            ratio = kwargs['observations']['geometric_overlap_sensor'][0]
+        else:
+            ratio = 0.0  # Default to 0 if not provided
+        self._update(episode, task, ratio=ratio)
+
+    # ---------------------------------------------------------------------
+    # Internal helper ------------------------------------------------------
+    # ---------------------------------------------------------------------
+
+    def _heading_error(
+        self,
+        agent_pos: np.ndarray,
+        agent_rot,
+        goal_pos: np.ndarray,
+    ) -> float:
+        """Unsigned heading error (radians) between the agent forward (−Z) and the
+        goal vector, computed with Habitat's `quaternion_rotate_vector` utility."""
+        from habitat.utils.geometry_utils import quaternion_rotate_vector
+
+        forward_world = quaternion_rotate_vector(agent_rot, np.array([0.0, 0.0, -1.0]))
+        goal_vec = goal_pos - agent_pos
+
+        # Project both to horizontal plane
+        forward_world[1] = 0.0
+        goal_vec[1] = 0.0
+        if np.linalg.norm(goal_vec) < 1e-6:
+            return 0.0
+
+        forward_world /= np.linalg.norm(forward_world) + 1e-9
+        goal_vec /= np.linalg.norm(goal_vec) + 1e-9
+
+        cosang = float(np.clip(np.dot(forward_world, goal_vec), -1.0, 1.0))
+        return float(np.arccos(cosang))
+
+    def _update(self, episode, task: EmbodiedTask, ratio: float = 0.0):
+        dist = self._get_dist(task)
+        agent_state = self._sim.get_agent_state()
+        core = self._reward_core(dist, agent_state, episode)
+        reward = core - self.gamma * (1 - min(ratio, 0.90))
+
+        # Manual success detection via helper method
+        if self._check_success(task, dist):
+            # theta = self._heading_error(
+            #     agent_state.position,
+            #     agent_state.rotation,
+            #     np.array(episode.goals[0].position, dtype=np.float32),
+            # )
+            reward += self.cs
+            reward += self.ca * ratio
+            # if theta < self.theta_g:
+            #     reward += self.ca
+
+        self._metric = reward
+
+    def _reward_core(self, dist: float, agent_state, episode):
+        """Child classes must implement this."""
+        raise NotImplementedError
+
+# @registry.register_measure
+# class DistanceToGoalReward(Measure):
+#     """
+#     The measure calculates a reward based on the distance towards the goal.
+#     The reward is `- (new_distance - previous_distance)` i.e. the
+#     decrease of distance to the goal.
+#     """
+
+#     cls_uuid: str = "distance_to_goal_reward"
+
+#     def __init__(
+#         self, sim: Simulator, config: "DictConfig", *args: Any, **kwargs: Any
+#     ):
+#         self._sim = sim
+#         self._config = config
+#         self._previous_distance: Optional[float] = None
+#         super().__init__()
+
+#     def _get_uuid(self, *args: Any, **kwargs: Any) -> str:
+#         return self.cls_uuid
+
+#     def reset_metric(self, episode, task, *args: Any, **kwargs: Any):
+#         task.measurements.check_measure_dependencies(
+#             self.uuid, [DistanceToGoal.cls_uuid]
+#         )
+#         self._previous_distance = task.measurements.measures[
+#             DistanceToGoal.cls_uuid
+#         ].get_metric()
+#         self.update_metric(episode=episode, task=task, *args, **kwargs)  # type: ignore
+
+#     def update_metric(
+#         self, episode, task: EmbodiedTask, *args: Any, **kwargs: Any
+#     ):
+#         distance_to_target = task.measurements.measures[
+#             DistanceToGoal.cls_uuid
+#         ].get_metric()
+#         self._metric = -(distance_to_target - self._previous_distance)
+#         self._previous_distance = distance_to_target
+
+
+# @registry.register_measure
+# class DistanceToGoalReward(_ProgressReward):
+#     """
+#     The measure calculates a reward based on the distance towards the goal.
+#     The reward is `- (new_distance - previous_distance)` i.e. the
+#     decrease of distance to the goal.
+#     """
+
+#     cls_uuid: str = "distance_to_goal_reward"
+
+#     def __init__(self, *args: Any, **kwargs: Any):
+#         self.prev_theta: Optional[float] = None
+#         super().__init__(*args, **kwargs)
+
+#     def _get_uuid(self, *args: Any, **kwargs: Any):
+#         return self.cls_uuid
+
+#     def _reward_core(self, dist: float, agent_state, episode):
+#         theta = self._heading_error(agent_state.position, agent_state.rotation, np.array(episode.goals[0].position, dtype=np.float32))
+#         dd = 0.0 if self.prev_dist is None else (self.prev_dist - dist)
+#         dt = 0.0 if self.prev_theta is None else (self.prev_theta - theta)
+#         reward = dd + (dt if dist < self.rg else 0.0)
+#         self.prev_dist, self.prev_theta = dist, theta
+#         return reward
+
 
 @registry.register_measure
-class DistanceToGoalReward(Measure):
+class DistanceToGoalReward(_ProgressReward):
     """
     The measure calculates a reward based on the distance towards the goal.
     The reward is `- (new_distance - previous_distance)` i.e. the
@@ -1008,34 +1528,18 @@ class DistanceToGoalReward(Measure):
 
     cls_uuid: str = "distance_to_goal_reward"
 
-    def __init__(
-        self, sim: Simulator, config: "DictConfig", *args: Any, **kwargs: Any
-    ):
-        self._sim = sim
-        self._config = config
-        self._previous_distance: Optional[float] = None
-        super().__init__()
+    def __init__(self, *args: Any, **kwargs: Any):
+        self.prev_theta: Optional[float] = None
+        super().__init__(*args, **kwargs)
 
-    def _get_uuid(self, *args: Any, **kwargs: Any) -> str:
+    def _get_uuid(self, *args: Any, **kwargs: Any):
         return self.cls_uuid
 
-    def reset_metric(self, episode, task, *args: Any, **kwargs: Any):
-        task.measurements.check_measure_dependencies(
-            self.uuid, [DistanceToGoal.cls_uuid]
-        )
-        self._previous_distance = task.measurements.measures[
-            DistanceToGoal.cls_uuid
-        ].get_metric()
-        self.update_metric(episode=episode, task=task, *args, **kwargs)  # type: ignore
-
-    def update_metric(
-        self, episode, task: EmbodiedTask, *args: Any, **kwargs: Any
-    ):
-        distance_to_target = task.measurements.measures[
-            DistanceToGoal.cls_uuid
-        ].get_metric()
-        self._metric = -(distance_to_target - self._previous_distance)
-        self._previous_distance = distance_to_target
+    def _reward_core(self, dist: float, agent_state, episode):
+        dd = 0.0 if self.prev_dist is None else (self.prev_dist - dist)
+        reward = dd
+        self.prev_dist, self.prev_theta = dist, 0
+        return reward
 
 
 class NavigationMovementAgentAction(SimulatorTaskAction):
