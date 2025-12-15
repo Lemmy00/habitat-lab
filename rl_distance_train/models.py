@@ -6,7 +6,7 @@ from torchvision.transforms import ColorJitter, RandomResizedCrop, Compose
 from typing import Union, List, Dict, Optional
 from PIL import Image
 
-from vint_based import load_distance_model
+from vint_based import load_distance_model, load_model_from_config
 from vip import load_vip
 
 class TemporalDistanceEncoder(nn.Module):
@@ -37,10 +37,14 @@ class TemporalDistanceEncoder(nn.Module):
         self.encoder_base = encoder_base
 
         # 1) load the pretrained Distance+Confidence model
-        if encoder_base.startswith("vip"):
-            dm = load_vip(modelid=encoder_base)
-        else:
-            dm = load_distance_model(modelid=encoder_base)
+        try:
+            if encoder_base.startswith("vip"):
+                dm = load_vip(modelid=encoder_base)
+            else:
+                dm = load_distance_model(modelid=encoder_base)
+        except:
+            dm = load_model_from_config(configpath="models/vld/config.yaml")
+            freeze = False
         # unwrap DataParallel if present
         self.base: nn.Module = getattr(dm, "module", dm)
 
@@ -128,7 +132,7 @@ class TemporalDistanceEncoder(nn.Module):
                 dist = self.base(observations, goals, observations.unsqueeze(1).expand(-1, 5, -1, -1, -1))
                 output = (dist, torch.ones_like(dist))
                 return_last_hidden_state = False
-            elif self.encoder_base.startswith("dist_vld"):
+            elif self.encoder_base.startswith(("dist_vld", "VLD")):
                 output = self.base(observations, goal_image=goals, return_last_hidden_state=return_last_hidden_state)
             else:
                 output = self.base(observations, goals, return_last_hidden_state=return_last_hidden_state)

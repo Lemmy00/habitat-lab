@@ -1,0 +1,33 @@
+save_snapshot: false
+load_snap: ''
+num_workers: 16
+batch_size: 32
+train_steps: 300001
+eval_freq: 100
+always_save: false
+seed: 1
+device: cuda
+experiment: vld
+wandbuser: null
+wandbproject: null
+datatype: .mp4
+doaug: rctraj
+n_prev: 5
+max_dist: 100
+negative_mining: false
+is_quasimetric: false
+is_confidence: true
+next_max_dist: 5
+agent:
+  _target_: models.classic_decoder_conf.DistanceConfidenceModel
+  device: ${device}
+  lr: 3.0e-05
+  decoder_layers: 4
+  freeze_encoder: true
+  freeze_decoder: false
+  use_relu: true
+  scheduler_config:
+    scheduler: cosine
+    epochs: ${eval:"int((${train_steps} - 1) / ${eval_freq})"}
+    warmup: false
+    warmup_epochs: 5
