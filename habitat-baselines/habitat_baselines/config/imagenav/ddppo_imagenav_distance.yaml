@@ -14,12 +14,12 @@ habitat_baselines:
   verbose: False
   trainer_name: "ddppo"
   torch_gpu_id: 0
-  tensorboard_dir: "tb/image_nav_dist_vis_VIP_overlap_policy"
+  tensorboard_dir: "tb/vld_no_conf"
   video_dir: "video_dir"
   test_episode_count: -1
-  eval_ckpt_path_dir: "data/image_nav_dist_vis_VIP_overlap_policy_checkpoints"
-  num_environments: 4
-  checkpoint_folder: "data/image_nav_dist_vis_VIP_overlap_policy_checkpoints"
+  eval_ckpt_path_dir: "data/policy/vld_no_conf"
+  num_environments: 2
+  checkpoint_folder: "data/policy/vld_no_conf"
   num_updates: -1
   total_num_steps: 1e9
   log_interval: 100

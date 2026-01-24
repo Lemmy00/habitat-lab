@@ -43,7 +43,7 @@ class TemporalDistanceEncoder(nn.Module):
             else:
                 dm = load_distance_model(modelid=encoder_base)
         except:
-            dm = load_model_from_config(configpath="models/vld/config.yaml")
+            dm = load_model_from_config(configpath="rl_distance_train/models/vld/config.yaml")
             freeze = False
         # unwrap DataParallel if present
         self.base: nn.Module = getattr(dm, "module", dm)

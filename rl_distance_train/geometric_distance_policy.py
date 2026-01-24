@@ -134,7 +134,7 @@ class GeometricOverlapDistanceNavNet(Net):
         self.dist_estimator = DistanceEstimator(in_dim=13, hidden=[256, 128, 64], 
                                                 dropout=0.0, n_dist=50, n_conf=20)
         self.dist_estimator.load_state_dict(
-            torch.load("models/distance_estimator/model.pt", weights_only=False)['model'])
+            torch.load("rl_distance_train/models/distance_estimator/model.pt", weights_only=False)['model'])
         for param in self.dist_estimator.parameters():
             param.requires_grad = False
 
@@ -178,7 +178,7 @@ class GeometricOverlapDistanceNavNet(Net):
             if self.use_pretrained_encoder:
                 self.visual_encoder = EfficientNet.from_name(backbone, in_channels=3, num_classes=self._hidden_size)
                 self.visual_encoder.load_state_dict(
-                    torch.load('models/visual_encoder/model.pth', weights_only=False))
+                    torch.load('rl_distance_train/models/visual_encoder/model.pth', weights_only=False))
 
                 # Freeze all backbone layers
                 for param in self.visual_encoder.parameters():
