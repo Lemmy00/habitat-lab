@@ -28,4 +28,4 @@ habitat:
     habitat_sim_v0:
       allow_sliding: False
   dataset:
-    scenes_dir: "/path/to/gibson"
+    scenes_dir: "data/scene_datasets"
