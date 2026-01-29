@@ -86,9 +86,6 @@ def env_navigation(args):
             if random.random() < args.sample:
                 continue
 
-            if episode != 7:
-                continue
-
             goal = env.habitat_env.current_episode.goals[0]
             
             try:
@@ -182,32 +179,33 @@ def env_navigation(args):
                 goal = resize(goal_image) if goal_image is not None else np.zeros_like(rgb)
                 plot = resize(plot_img.astype(np.uint8))
 
-                step_dir = os.path.join(args.save_dir, episode_id)
-                os.makedirs(step_dir, exist_ok=True)
-                step_idx = len(images)
-                step_path = os.path.join(step_dir, f"{step_idx}.pdf")
+                # Save per-step images (uncomment to save individual images)
+                # step_dir = os.path.join(args.save_dir, episode_id)
+                # os.makedirs(step_dir, exist_ok=True)
+                # step_idx = len(images)
+                # step_path = os.path.join(step_dir, f"{step_idx}.pdf")
 
-                fig, axes = plt.subplots(1, 4, figsize=(16, 4), dpi=150)
+                # fig, axes = plt.subplots(1, 4, figsize=(16, 4), dpi=150)
 
-                axes[0].imshow(rgb)
-                axes[0].set_title("Observation", fontsize=16)
-                axes[0].axis('off')
+                # axes[0].imshow(rgb)
+                # axes[0].set_title("Observation", fontsize=16)
+                # axes[0].axis('off')
 
-                axes[1].imshow(goal)
-                axes[1].set_title("Goal Image", fontsize=16)
-                axes[1].axis('off')
+                # axes[1].imshow(goal)
+                # axes[1].set_title("Goal Image", fontsize=16)
+                # axes[1].axis('off')
 
-                axes[2].imshow(top_down_map)
-                axes[2].set_title("Top-Down Map", fontsize=16)
-                axes[2].axis('off')
+                # axes[2].imshow(top_down_map)
+                # axes[2].set_title("Top-Down Map", fontsize=16)
+                # axes[2].axis('off')
 
-                axes[3].imshow(plot)
-                axes[3].set_title("VLD over Time", fontsize=16)
-                axes[3].axis('off')
+                # axes[3].imshow(plot)
+                # axes[3].set_title("VLD over Time", fontsize=16)
+                # axes[3].axis('off')
 
-                plt.tight_layout()
-                fig.savefig(step_path, bbox_inches="tight", pad_inches=0.1)
-                plt.close(fig)
+                # plt.tight_layout()
+                # fig.savefig(step_path, bbox_inches="tight", pad_inches=0.1)
+                # plt.close(fig)
 
                 def add_label(img, text):
                     labeled = img.copy()

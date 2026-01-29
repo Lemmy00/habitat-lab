@@ -29,7 +29,7 @@ from habitat_sim.utils.common import quat_to_coeffs, quat_from_angle_axis
 
 from vint_based import load_distance_model
 from vip import load_vip
-from vint_train.models.vint.vint import ViNT
+from vint_based.models.vint.vint import ViNT
 
 
 def zip_directory(src_dir: str, dst_zip: str) -> None:
@@ -149,7 +149,7 @@ def load_embedding(rep: str):
         model = model.to('cuda')
         transform = get_default_transform()
     # Distance decoders, Vint distance, and one-scene quasi MSE
-    elif rep.startswith(('one_scene_decoder', 'dist_decoder', 'vint_dist', 'one_scene_quasi', 'quasi', 'dist_vld')):
+    elif rep.startswith(('one_scene_decoder', 'dist_decoder', 'vint_dist', 'one_scene_quasi', 'quasi', 'dist_vld', "VLD", "vld")):
         model = load_distance_model(modelid=rep)
         transform = get_default_transform()
     # Standard ResNet

@@ -22,11 +22,6 @@ class PPOAgent(Agent):
     def __init__(self, config: DictConfig, model_weights: Dict) -> None:
         super().__init__()
         self.config = config
-
-        with read_write(self.config):
-            self.config.habitat.dataset.split = "val"
-            self.config.habitat.dataset.scenes_dir = "data/scene_datasets"
-
         self.obs_space, self.act_space = make_spaces_from_ckpt_config(OmegaConf.to_container(self.config))
 
         self.device = (

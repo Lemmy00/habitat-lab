@@ -77,6 +77,7 @@ class PPOAgent(Agent):
 
         with read_write(self.config):
             self.config.habitat.dataset.split = "val"
+            self.config.habitat.dataset.scenes_dir = "data/scene_datasets"
 
         with Env(config=self.config.habitat) as tmp_env:
             self.obs_space = tmp_env.observation_space
