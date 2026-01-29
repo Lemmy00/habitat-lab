@@ -12,8 +12,7 @@ import os
 import numpy as np
 import torch
 
-from policy import PPOAgent
-from rl_distance_train import distance_policy, dataset, distance_policy_gt, geometric_distance_policy
+from policy_no_habitat import PPOAgent
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 

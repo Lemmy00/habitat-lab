@@ -1,6 +1,9 @@
 import numpy as np
 from gym import spaces
-from habitat.core.spaces import ActionSpace, EmptySpace
+
+from rl_distance_train.common import EmptySpace
+from rl_distance_train.common import ActionSpace
+
 
 def make_spaces_from_ckpt_config(cfg_dict):
     """
