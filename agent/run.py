@@ -12,7 +12,7 @@ import os
 import numpy as np
 import torch
 
-from policy_no_habitat import PPOAgent
+from policy import PPOAgent
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
